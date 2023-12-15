@@ -32,6 +32,7 @@
 #include "cpu_bits.h"
 #include "debug.h"
 #include "tcg/oversized-guest.h"
+#include "suev.h"
 
 int riscv_cpu_mmu_index(CPURISCVState *env, bool ifetch)
 {
@@ -727,6 +728,116 @@ static int get_physical_address_pmp(CPURISCVState *env, int *prot, hwaddr addr,
     return TRANSLATE_SUCCESS;
 }
 
+static int get_physical_address_rmp(CPURISCVState *env, int *prot, hwaddr hpa,
+                                    vaddr gpa, int rmpe_type, int access_type)
+{
+    if (!env->hrmplen) {
+        *prot = PAGE_READ | PAGE_WRITE | PAGE_EXEC;
+        return TRANSLATE_SUCCESS;
+    }
+
+    /* TODO: 32 bit system */
+    uint64_t asid = get_field(env->hgatp, SATP64_ASID);
+    hpa &= ~4095UL;
+    gpa &= ~4095UL;
+
+    if (env->hrmpbase <= hpa && hpa < env->hrmpbase + env->hrmplen) {
+        goto access_rmp;
+    }
+
+    if (hpa > RMP_COVERED_END(env)) {
+        /* Not RMP-covered pages are accessed as SHARED pages */
+        goto access_shared;
+    }
+
+    struct rmpe rmpe;
+    cpu_physical_memory_read(RMPE_ADDR(env, hpa), &rmpe, sizeof(struct rmpe));
+    if (rmpe.attr.type == RMPE_LEAF) {
+        goto access_rmp;
+    }
+    if (rmpe_type != rmpe.attr.type) {
+        return TRANSLATE_FAIL;
+    }
+    if (rmpe_type == RMPE_SHARED) {
+        goto access_shared;
+    }
+
+    /* Access to PRIVATE/MERGEABLE page */
+
+    if (!env->virt_enabled || asid >= SUEV_ASID_END) {
+        /* Hypervisor/normal VMs cannot access PRIVATE/MERGEABLE pages */
+        return TRANSLATE_FAIL;
+    }
+    if (!rmpe.attr.validated) {
+        return TRANSLATE_FAIL;
+    }
+
+    if (rmpe.attr.type == RMPE_MERGEABLE && rmpe.attr.fixed) {
+        if (access_type == MMU_DATA_STORE) {
+            /* Fixed pages are write-protected */
+            return TRANSLATE_FAIL;
+        }
+        struct rmpe rmple;
+        uint64_t rmple_addr = (rmpe.attr.gpn << 12) +
+                              asid * sizeof(struct rmpe);
+        cpu_physical_memory_read(rmple_addr, &rmple, sizeof(rmple));
+        if (!rmple.attr.validated) {
+            return TRANSLATE_FAIL;
+        }
+        if ((rmple.attr.gpn << 12) != gpa) {
+            return TRANSLATE_FAIL;
+        }
+        if (suev_vms[asid].gen != rmple.gen) {
+            return TRANSLATE_FAIL;
+        }
+        *prot = PAGE_READ | PAGE_EXEC;
+    } else {
+        if (asid != rmpe.attr.asid) {
+            /* Not necessary. Generation is enough. */
+            return TRANSLATE_FAIL;
+        }
+        if ((rmpe.attr.gpn << 12) != gpa) {
+            return TRANSLATE_FAIL;
+        }
+        if (suev_vms[asid].gen != rmpe.gen) {
+            return TRANSLATE_FAIL;
+        }
+        *prot = PAGE_READ | PAGE_WRITE | PAGE_EXEC;
+    }
+    return TRANSLATE_SUCCESS;
+
+access_rmp:
+    if (rmpe_type != RMPE_SHARED) {
+        return TRANSLATE_FAIL;
+    }
+    /* Hypevisor can *read* RMP as SHARED pages */
+    if (!env->virt_enabled && access_type == MMU_DATA_LOAD) {
+        *prot = PAGE_READ;
+        return TRANSLATE_SUCCESS;
+    } else {
+        return TRANSLATE_FAIL;
+    }
+
+access_shared:
+    if (rmpe_type != RMPE_SHARED) {
+        return TRANSLATE_FAIL;
+    }
+    if (env->virt_enabled && asid < SUEV_ASID_END) {
+        if (access_type != MMU_INST_FETCH) {
+            /* Confidential VMs cannot execute SHARED pages.
+             * Access to nested page tables in G-stage address translation
+             * also comes here. */
+            *prot = PAGE_READ | PAGE_WRITE;
+            return TRANSLATE_SUCCESS;
+        } else {
+            return TRANSLATE_FAIL;
+        }
+    } else {
+        *prot = PAGE_READ | PAGE_WRITE | PAGE_EXEC;
+        return TRANSLATE_SUCCESS;
+    }
+}
+
 /*
  * get_physical_address - get the physical address for this virtual address
  *
@@ -748,13 +859,15 @@ static int get_physical_address_pmp(CPURISCVState *env, int *prot, hwaddr addr,
  *               Second stage is used for hypervisor guest translation
  * @two_stage: Are we going to perform two stage translation
  * @is_debug: Is this access from a debugger or the monitor?
+ * @rmpe_type: If two_stage && first_stage, filled with the RMPE type
+ *             (RMPE_SHARED,RMPE_PRIVATE,RMPE_MERGEABLE) bits found in the PTE.
  */
-static int get_physical_address(CPURISCVState *env, hwaddr *physical,
+int get_physical_address(CPURISCVState *env, hwaddr *physical,
                                 int *ret_prot, vaddr addr,
                                 target_ulong *fault_pte_addr,
                                 int access_type, int mmu_idx,
                                 bool first_stage, bool two_stage,
-                                bool is_debug)
+                                bool is_debug, uint64_t *rmpe_type)
 {
     /*
      * NOTE: the env->pc value visible here will not be
@@ -831,6 +944,9 @@ static int get_physical_address(CPURISCVState *env, hwaddr *physical,
     case VM_1_10_SV57:
       levels = 5; ptidxbits = 9; ptesize = 8; break;
     case VM_1_10_MBARE:
+        if (first_stage && two_stage && rmpe_type) {
+            *rmpe_type = RMPE_PRIVATE;
+        }
         *physical = addr;
         *ret_prot = PAGE_READ | PAGE_WRITE | PAGE_EXEC;
         return TRANSLATE_SUCCESS;
@@ -887,7 +1003,7 @@ restart:
         }
 
         /* check that physical address of PTE is legal */
-
+        int rmp_ret;
         if (two_stage && first_stage) {
             int vbase_prot;
             hwaddr vbase;
@@ -896,7 +1012,7 @@ restart:
             int vbase_ret = get_physical_address(env, &vbase, &vbase_prot,
                                                  base, NULL, MMU_DATA_LOAD,
                                                  MMUIdx_U, false, true,
-                                                 is_debug);
+                                                 is_debug, NULL);
 
             if (vbase_ret != TRANSLATE_SUCCESS) {
                 if (fault_pte_addr) {
@@ -905,9 +1021,27 @@ restart:
                 return TRANSLATE_G_STAGE_FAIL;
             }
 
+            int rmp_prot;
+            /*
+             * For VS-stage address translation, page tables must be VM's
+             * private page.
+             */
+            rmp_ret = get_physical_address_rmp(env, &rmp_prot, vbase, base,
+                                               RMPE_PRIVATE, MMU_DATA_LOAD);
             pte_addr = vbase + idx * ptesize;
         } else {
+            int rmp_prot;
+            /*
+             * For G-stage address translation, page tables must be shared
+             * page.
+             */
+            rmp_ret = get_physical_address_rmp(env, &rmp_prot, base, 0UL,
+                                               RMPE_SHARED, MMU_DATA_LOAD);
             pte_addr = base + idx * ptesize;
+        }
+
+        if (rmp_ret != TRANSLATE_SUCCESS) {
+            return TRANSLATE_FAIL;
         }
 
         int pmp_prot;
@@ -1018,6 +1152,10 @@ restart:
     if (!((prot >> access_type) & 1)) {
         /* Access check failed */
         return TRANSLATE_FAIL;
+    }
+
+    if (two_stage && first_stage && rmpe_type) {
+        *rmpe_type = (pte & PTE_RMPE_TYPE) >> ctz64(PTE_RMPE_TYPE);
     }
 
     /* If necessary, set accessed and dirty bits. */
@@ -1160,13 +1298,13 @@ hwaddr riscv_cpu_get_phys_page_debug(CPUState *cs, vaddr addr)
     int mmu_idx = cpu_mmu_index(&cpu->env, false);
 
     if (get_physical_address(env, &phys_addr, &prot, addr, NULL, 0, mmu_idx,
-                             true, env->virt_enabled, true)) {
+                             true, env->virt_enabled, true, NULL)) {
         return -1;
     }
 
     if (env->virt_enabled) {
         if (get_physical_address(env, &phys_addr, &prot, phys_addr, NULL,
-                                 0, MMUIdx_U, false, true, true)) {
+                                 0, MMUIdx_U, false, true, true, NULL)) {
             return -1;
         }
     }
@@ -1252,7 +1390,7 @@ bool riscv_cpu_tlb_fill(CPUState *cs, vaddr address, int size,
     CPURISCVState *env = &cpu->env;
     vaddr im_address;
     hwaddr pa = 0;
-    int prot, prot2, prot_pmp;
+    int prot, prot2, prot_rmp, prot_pmp;
     bool pmp_violation = false;
     bool first_stage_error = true;
     bool two_stage_lookup = mmuidx_2stage(mmu_idx);
@@ -1270,9 +1408,10 @@ bool riscv_cpu_tlb_fill(CPUState *cs, vaddr address, int size,
     pmu_tlb_fill_incr_ctr(cpu, access_type);
     if (two_stage_lookup) {
         /* Two stage lookup */
+        uint64_t rmpe_type;
         ret = get_physical_address(env, &pa, &prot, address,
                                    &env->guest_phys_fault_addr, access_type,
-                                   mmu_idx, true, true, false);
+                                   mmu_idx, true, true, false, &rmpe_type);
 
         /*
          * A G-stage exception may be triggered during two state lookup.
@@ -1295,7 +1434,7 @@ bool riscv_cpu_tlb_fill(CPUState *cs, vaddr address, int size,
 
             ret = get_physical_address(env, &pa, &prot2, im_address, NULL,
                                        access_type, MMUIdx_U, false, true,
-                                       false);
+                                       false, NULL);
 
             qemu_log_mask(CPU_LOG_MMU,
                           "%s 2nd-stage address=%" VADDR_PRIx
@@ -1304,6 +1443,12 @@ bool riscv_cpu_tlb_fill(CPUState *cs, vaddr address, int size,
                           __func__, im_address, ret, pa, prot2);
 
             prot &= prot2;
+
+            if (ret == TRANSLATE_SUCCESS) {
+                ret = get_physical_address_rmp(env, &prot_rmp, pa, im_address, rmpe_type,
+                                               access_type);
+                prot &= prot_rmp;
+            }
 
             if (ret == TRANSLATE_SUCCESS) {
                 ret = get_physical_address_pmp(env, &prot_pmp, pa,
@@ -1331,13 +1476,19 @@ bool riscv_cpu_tlb_fill(CPUState *cs, vaddr address, int size,
         }
     } else {
         /* Single stage lookup */
-        ret = get_physical_address(env, &pa, &prot, address, NULL,
-                                   access_type, mmu_idx, true, false, false);
+        ret = get_physical_address(env, &pa, &prot, address, NULL, access_type,
+                                   mmu_idx, true, false, false, NULL);
 
         qemu_log_mask(CPU_LOG_MMU,
                       "%s address=%" VADDR_PRIx " ret %d physical "
                       HWADDR_FMT_plx " prot %d\n",
                       __func__, address, ret, pa, prot);
+
+        if (ret == TRANSLATE_SUCCESS) {
+            ret = get_physical_address_rmp(env, &prot_rmp, pa, address, RMPE_SHARED,
+                                           access_type);
+            prot &= prot_rmp;
+        }
 
         if (ret == TRANSLATE_SUCCESS) {
             ret = get_physical_address_pmp(env, &prot_pmp, pa,

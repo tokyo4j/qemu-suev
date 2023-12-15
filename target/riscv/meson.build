@@ -15,6 +15,7 @@ riscv_ss.add(files(
   'fpu_helper.c',
   'gdbstub.c',
   'op_helper.c',
+  'suev.c',
   'vector_helper.c',
   'bitmanip_helper.c',
   'translate.c',
