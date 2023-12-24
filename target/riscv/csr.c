@@ -3416,6 +3416,41 @@ static RISCVException write_mseccfg(CPURISCVState *env, int csrno,
     return RISCV_EXCP_NONE;
 }
 
+static RISCVException read_hrmpbase(CPURISCVState *env, int csrno,
+                                   target_ulong *val)
+{
+    *val = env->hrmpbase;
+    return RISCV_EXCP_NONE;
+}
+
+static RISCVException write_hrmpbase(CPURISCVState *env, int csrno,
+                                    target_ulong val)
+{
+    if (env->hrmplen) {
+        return RISCV_EXCP_ILLEGAL_INST;
+    }
+    env->hrmpbase = val;
+    return RISCV_EXCP_NONE;
+}
+
+static RISCVException read_hrmplen(CPURISCVState *env, int csrno,
+                                   target_ulong *val)
+{
+    *val = env->hrmplen;
+    return RISCV_EXCP_NONE;
+}
+
+static RISCVException write_hrmplen(CPURISCVState *env, int csrno,
+                                    target_ulong val)
+{
+    if (env->hrmplen) {
+        return RISCV_EXCP_ILLEGAL_INST;
+    }
+    // TODO: check if the range is actually in RAM
+    env->hrmplen = val;
+    return RISCV_EXCP_NONE;
+}
+
 static RISCVException read_pmpcfg(CPURISCVState *env, int csrno,
                                   target_ulong *val)
 {
@@ -4302,6 +4337,9 @@ riscv_csr_operations csr_ops[CSR_TABLE_SIZE] = {
     [CSR_HTIMEDELTAH] = { "htimedeltah", hmode32, read_htimedeltah,
                           write_htimedeltah,
                           .min_priv_ver = PRIV_VERSION_1_12_0                },
+
+    [CSR_HRMPBASE] = { "hrmpbase", hmode, read_hrmpbase, write_hrmpbase },
+    [CSR_HRMPLEN]  = { "hrmplen",  hmode, read_hrmplen,  write_hrmplen  },
 
     [CSR_VSSTATUS]    = { "vsstatus",    hmode,   read_vsstatus,
                           write_vsstatus,

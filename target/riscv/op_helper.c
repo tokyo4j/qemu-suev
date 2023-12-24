@@ -24,6 +24,7 @@
 #include "qemu/main-loop.h"
 #include "exec/exec-all.h"
 #include "exec/helper-proto.h"
+#include "suev.h"
 
 /* Exceptions processing helpers */
 G_NORETURN void riscv_raise_exception(CPURISCVState *env,
@@ -281,6 +282,16 @@ target_ulong helper_sret(CPURISCVState *env)
 
     if (env->virt_enabled && get_field(env->hstatus, HSTATUS_VTSR)) {
         riscv_raise_exception(env, RISCV_EXCP_VIRT_INSTRUCTION_FAULT, GETPC());
+    }
+
+    if (env->hrmplen && get_field(env->hstatus, HSTATUS_SPV) &&
+            get_field(env->hgatp, SATP64_ASID) < SUEV_ASID_END) {
+        /* On running confidential VMs, the guest must be in ACTIVATRED state.
+         * TODO: 32 bit system */
+        uint64_t asid = get_field(env->hgatp, SATP64_ASID);
+        if (suev_vms[asid].state != GUEST_STATE_ACTIVATED) {
+            riscv_raise_exception(env, RISCV_EXCP_ILLEGAL_INST, GETPC());
+        }
     }
 
     mstatus = env->mstatus;

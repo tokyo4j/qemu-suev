@@ -304,6 +304,10 @@ struct CPUArchState {
     pmp_table_t pmp_state;
     target_ulong mseccfg;
 
+    /* mergeable pages */
+    target_ulong hrmpbase;
+    target_ulong hrmplen;
+
     /* trigger module */
     target_ulong trigger_cur;
     target_ulong tdata1[RV_MAX_TRIGGERS];
@@ -438,6 +442,12 @@ int riscv_cpu_mmu_index(CPURISCVState *env, bool ifetch);
 G_NORETURN void  riscv_cpu_do_unaligned_access(CPUState *cs, vaddr addr,
                                                MMUAccessType access_type,
                                                int mmu_idx, uintptr_t retaddr);
+int get_physical_address(CPURISCVState *env, hwaddr *physical,
+                         int *ret_prot, vaddr addr,
+                         target_ulong *fault_pte_addr,
+                         int access_type, int mmu_idx,
+                         bool first_stage, bool two_stage,
+                         bool is_debug, uint64_t *confidentiality);
 bool riscv_cpu_tlb_fill(CPUState *cs, vaddr address, int size,
                         MMUAccessType access_type, int mmu_idx,
                         bool probe, uintptr_t retaddr);

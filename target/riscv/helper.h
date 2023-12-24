@@ -121,6 +121,17 @@ DEF_HELPER_2(cbo_clean_flush, void, env, tl)
 DEF_HELPER_2(cbo_inval, void, env, tl)
 DEF_HELPER_2(cbo_zero, void, env, tl)
 
+DEF_HELPER_3(rmpupdate, void, env, tl, tl)
+DEF_HELPER_2(vmcreate, void, env, tl)
+DEF_HELPER_2(vmactivate, void, env, tl)
+DEF_HELPER_4(vmupdatedata, void, env, tl, tl, tl)
+DEF_HELPER_2(vmdestroy, void, env, tl)
+DEF_HELPER_2(pvalidate, void, env, tl)
+DEF_HELPER_3(pfix, void, env, tl, tl)
+DEF_HELPER_3(punfix, void, env, tl, tl)
+DEF_HELPER_3(pmerge, void, env, tl, tl)
+DEF_HELPER_4(punmerge, void, env, tl, tl, tl)
+
 /* Special functions */
 DEF_HELPER_2(csrr, tl, env, int)
 DEF_HELPER_3(csrw, void, env, int, tl)
