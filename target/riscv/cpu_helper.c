@@ -755,14 +755,15 @@ static int get_physical_address_rmp(CPURISCVState *env, int *prot, hwaddr hpa,
     if (rmpe.attr.type == RMPE_LEAF) {
         goto access_rmp;
     }
-    if (rmpe_type != rmpe.attr.type) {
-        return TRANSLATE_FAIL;
-    }
-    if (rmpe_type == RMPE_SHARED) {
+    if (rmpe.attr.type == RMPE_SHARED) {
         goto access_shared;
     }
 
     /* Access to PRIVATE/MERGEABLE page */
+
+    if (rmpe_type != rmpe.attr.type) {
+        return TRANSLATE_FAIL;
+    }
 
     if (!env->virt_enabled || asid >= SUEV_ASID_END) {
         /* Hypervisor/normal VMs cannot access PRIVATE/MERGEABLE pages */

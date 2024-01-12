@@ -6,10 +6,6 @@ static bool trans_rmpupdate(DisasContext *ctx, arg_rmpupdate *a)
 
     gen_helper_rmpupdate(cpu_env, hpa, rmpe_attrs);
 
-    gen_update_pc(ctx, ctx->cur_insn_len);
-    exit_tb(ctx);
-    ctx->base.is_jmp = DISAS_NORETURN;
-
     return true;
 }
 
@@ -73,10 +69,6 @@ static bool trans_pfix(DisasContext *ctx, arg_pfix *a)
 
     gen_helper_pfix(cpu_env, hpa, leaf_hpa);
 
-    gen_update_pc(ctx, ctx->cur_insn_len);
-    exit_tb(ctx);
-    ctx->base.is_jmp = DISAS_NORETURN;
-
     return true;
 }
 
@@ -87,10 +79,6 @@ static bool trans_punfix(DisasContext *ctx, arg_punfix *a)
     TCGv asid = get_gpr(ctx, 11, EXT_NONE); //a1
 
     gen_helper_punfix(cpu_env, hpa, asid);
-
-    gen_update_pc(ctx, ctx->cur_insn_len);
-    exit_tb(ctx);
-    ctx->base.is_jmp = DISAS_NORETURN;
 
     return true;
 }
@@ -103,10 +91,6 @@ static bool trans_pmerge(DisasContext *ctx, arg_pmerge *a)
 
     gen_helper_pmerge(cpu_env, dst_hpa, src_hpa);
 
-    gen_update_pc(ctx, ctx->cur_insn_len);
-    exit_tb(ctx);
-    ctx->base.is_jmp = DISAS_NORETURN;
-
     return true;
 }
 
@@ -118,10 +102,6 @@ static bool trans_punmerge(DisasContext *ctx, arg_punmerge *a)
     TCGv asid = get_gpr(ctx, 12, EXT_NONE); //a2
 
     gen_helper_punmerge(cpu_env, dst_hpa, src_hpa, asid);
-
-    gen_update_pc(ctx, ctx->cur_insn_len);
-    exit_tb(ctx);
-    ctx->base.is_jmp = DISAS_NORETURN;
 
     return true;
 }

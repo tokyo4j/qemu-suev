@@ -177,16 +177,19 @@ void helper_pvalidate(CPURISCVState *env, target_ulong rmpe_attr) {
     if (ret != TRANSLATE_SUCCESS) {
         SUEV_VM_ASSERT(false);
     }
-    uint64_t current_asid = get_field(env->hgatp, SATP64_ASID);
+    uint64_t asid = get_field(env->hgatp, SATP64_ASID);
     struct rmpe rmpe;
     cpu_physical_memory_read(RMPE_ADDR(env, hpa), &rmpe, sizeof(rmpe));
     SUEV_VM_ASSERT(rmpe.attr.validated == input_attr.validated &&
                    !rmpe.attr.fixed &&
                    rmpe.attr.type == input_attr.type &&
                    (rmpe.attr.gpn << 12) == gpa &&
-                   rmpe.gen == suev_vms[current_asid].gen);
-    rmpe.attr.validated = 1;
+                   rmpe.gen == suev_vms[asid].gen);
+    // TODO allow fixed
+    rmpe.attr.validated = !rmpe.attr.validated;
     cpu_physical_memory_write(RMPE_ADDR(env, hpa), &rmpe, sizeof(rmpe));
+
+    tlb_flush(env_cpu(env));
 #endif
 }
 
